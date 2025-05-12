@@ -1,4 +1,9 @@
-import { kv } from '@vercel/kv';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+);
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://photic23.vercel.app');
@@ -15,9 +20,10 @@ export default async function handler(req, res) {
 
     try {
         // Clear stored tokens
-        await kv.del('spotify_access_token');
-        await kv.del('spotify_refresh_token');
-        await kv.del('spotify_token_expiration');
+        await supabase
+            .from('spotify_tokens')
+            .delete()
+            .eq('id', 1);
         
         // Clear session cookie
         res.setHeader('Set-Cookie', `spotify_session=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0`);

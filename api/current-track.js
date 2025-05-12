@@ -1,4 +1,9 @@
-import { kv } from '@vercel/kv';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+);
 
 export default async function handler(req, res) {
     // Enable CORS
@@ -10,26 +15,30 @@ export default async function handler(req, res) {
     }
 
     try {
-        // Get the stored access token
-        const accessToken = await kv.get('spotify_access_token');
-        
-        if (!accessToken) {
+        // Get the stored tokens
+        const { data: tokenData, error } = await supabase
+            .from('spotify_tokens')
+            .select('*')
+            .eq('id', 1)
+            .single();
+
+        if (error || !tokenData) {
             return res.status(200).json(null);
         }
 
         // Check if token is expired
-        const expirationTime = await kv.get('spotify_token_expiration');
-        if (expirationTime && new Date().getTime() > parseInt(expirationTime)) {
+        if (tokenData.expires_at && new Date(tokenData.expires_at) < new Date()) {
             // Token is expired, try to refresh it
-            const newToken = await refreshSpotifyToken();
+            const newToken = await refreshSpotifyToken(tokenData.refresh_token);
             if (!newToken) {
                 return res.status(200).json(null);
             }
+            tokenData.access_token = newToken;
         }
 
         const response = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
             headers: {
-                'Authorization': `Bearer ${accessToken}`
+                'Authorization': `Bearer ${tokenData.access_token}`
             }
         });
 
@@ -39,7 +48,7 @@ export default async function handler(req, res) {
 
         if (response.status === 401) {
             // Token expired, try to refresh
-            const newToken = await refreshSpotifyToken();
+            const newToken = await refreshSpotifyToken(tokenData.refresh_token);
             if (newToken) {
                 // Retry with new token
                 const retryResponse = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
@@ -68,8 +77,7 @@ export default async function handler(req, res) {
     }
 }
 
-async function refreshSpotifyToken() {
-    const refreshToken = await kv.get('spotify_refresh_token');
+async function refreshSpotifyToken(refreshToken) {
     if (!refreshToken) return null;
 
     try {
@@ -87,15 +95,17 @@ async function refreshSpotifyToken() {
 
         const data = await response.json();
         if (data.access_token) {
-            // Store the new tokens
-            await kv.set('spotify_access_token', data.access_token);
-            if (data.refresh_token) {
-                await kv.set('spotify_refresh_token', data.refresh_token);
-            }
+            // Update tokens in database
+            const expiresAt = new Date(Date.now() + (data.expires_in * 1000));
             
-            // Update expiration time
-            const expirationTime = new Date().getTime() + (data.expires_in * 1000);
-            await kv.set('spotify_token_expiration', expirationTime.toString());
+            await supabase
+                .from('spotify_tokens')
+                .update({
+                    access_token: data.access_token,
+                    refresh_token: data.refresh_token || refreshToken,
+                    expires_at: expiresAt.toISOString()
+                })
+                .eq('id', 1);
             
             return data.access_token;
         }

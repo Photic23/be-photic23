@@ -1,4 +1,9 @@
-import { kv } from '@vercel/kv';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+);
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://photic23.vercel.app');
@@ -34,15 +39,23 @@ export default async function handler(req, res) {
         const data = await tokenResponse.json();
         
         if (data.access_token) {
-            // Store tokens in KV
-            await kv.set('spotify_access_token', data.access_token);
-            if (data.refresh_token) {
-                await kv.set('spotify_refresh_token', data.refresh_token);
-            }
+            // Calculate expiration time
+            const expiresAt = new Date(Date.now() + (data.expires_in * 1000));
             
-            // Store expiration time
-            const expirationTime = new Date().getTime() + (data.expires_in * 1000);
-            await kv.set('spotify_token_expiration', expirationTime.toString());
+            // Store or update tokens in Supabase
+            const { error } = await supabase
+                .from('spotify_tokens')
+                .upsert({
+                    id: 1, // We're only storing one user's tokens
+                    access_token: data.access_token,
+                    refresh_token: data.refresh_token,
+                    expires_at: expiresAt.toISOString()
+                });
+
+            if (error) {
+                console.error('Supabase error:', error);
+                return res.status(500).json({ error: 'Failed to store tokens' });
+            }
             
             // Set a secure httpOnly cookie for session
             res.setHeader('Set-Cookie', `spotify_session=authorized; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=31536000`);
