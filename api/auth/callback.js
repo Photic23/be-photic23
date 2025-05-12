@@ -1,12 +1,29 @@
-import { createClient } from '@supabase/supabase-js';
+const { createClient } = require('@supabase/supabase-js');
 
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-);
+let supabase;
+try {
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+        supabase = createClient(
+            process.env.SUPABASE_URL,
+            process.env.SUPABASE_ANON_KEY
+        );
+    }
+} catch (error) {
+    console.error('Supabase initialization error:', error);
+}
 
-export default async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://photic23.vercel.app');
+module.exports = async function handler(req, res) {
+    const allowedOrigins = [
+        'https://photic23.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:3001'
+    ];
+    
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -17,6 +34,10 @@ export default async function handler(req, res) {
 
     if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    if (!supabase) {
+        return res.status(500).json({ error: 'Database not configured' });
     }
 
     const { code, codeVerifier, redirectUri } = req.body;
@@ -46,7 +67,7 @@ export default async function handler(req, res) {
             const { error } = await supabase
                 .from('spotify_tokens')
                 .upsert({
-                    id: 1, // We're only storing one user's tokens
+                    id: 1,
                     access_token: data.access_token,
                     refresh_token: data.refresh_token,
                     expires_at: expiresAt.toISOString()
@@ -68,4 +89,4 @@ export default async function handler(req, res) {
         console.error('Error in auth callback:', error);
         return res.status(500).json({ error: 'Internal server error' });
     }
-}
+};

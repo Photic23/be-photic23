@@ -1,17 +1,43 @@
-import { createClient } from '@supabase/supabase-js';
+const { createClient } = require('@supabase/supabase-js');
 
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-);
+// Initialize Supabase with error handling
+let supabase;
+try {
+    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+        console.log('Missing Supabase environment variables');
+    } else {
+        supabase = createClient(
+            process.env.SUPABASE_URL,
+            process.env.SUPABASE_ANON_KEY
+        );
+    }
+} catch (error) {
+    console.error('Supabase initialization error:', error);
+}
 
-export default async function handler(req, res) {
-    // Enable CORS
-    res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://photic23.vercel.app');
+module.exports = async function handler(req, res) {
+    // CORS handling
+    const allowedOrigins = [
+        'https://photic23.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:3001'
+    ];
+    
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
+    }
+
+    // If Supabase isn't initialized, return null
+    if (!supabase) {
+        console.log('Supabase not initialized - returning null');
+        return res.status(200).json(null);
     }
 
     try {
@@ -73,9 +99,9 @@ export default async function handler(req, res) {
         return res.status(200).json(null);
     } catch (error) {
         console.error('Error fetching current track:', error);
-        return res.status(500).json({ error: 'Failed to fetch current track' });
+        return res.status(200).json(null);
     }
-}
+};
 
 async function refreshSpotifyToken(refreshToken) {
     if (!refreshToken) return null;

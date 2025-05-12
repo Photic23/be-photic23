@@ -1,12 +1,29 @@
-import { createClient } from '@supabase/supabase-js';
+const { createClient } = require('@supabase/supabase-js');
 
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-);
+let supabase;
+try {
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+        supabase = createClient(
+            process.env.SUPABASE_URL,
+            process.env.SUPABASE_ANON_KEY
+        );
+    }
+} catch (error) {
+    console.error('Supabase initialization error:', error);
+}
 
-export default async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://photic23.vercel.app');
+module.exports = async function handler(req, res) {
+    const allowedOrigins = [
+        'https://photic23.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:3001'
+    ];
+    
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     
@@ -16,6 +33,10 @@ export default async function handler(req, res) {
 
     if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    if (!supabase) {
+        return res.status(200).json({ success: true });
     }
 
     try {
@@ -33,4 +54,4 @@ export default async function handler(req, res) {
         console.error('Error during logout:', error);
         return res.status(500).json({ error: 'Failed to logout' });
     }
-}
+};

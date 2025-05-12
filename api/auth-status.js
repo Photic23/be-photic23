@@ -1,56 +1,38 @@
-export default function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://photic23.vercel.app');
+module.exports = function handler(req, res) {
+    // Enable CORS
+    const allowedOrigins = [
+        'https://photic23.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:3001'
+    ];
+    
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     
     if (req.method === 'OPTIONS') {
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type');
         return res.status(200).end();
     }
     
-    // Parse cookies
-    const cookies = req.headers.cookie?.split('; ').reduce((acc, cookie) => {
-        const [key, value] = cookie.split('=');
-        acc[key] = value;
-        return acc;
-    }, {}) || {};
-    
-    const authorized = cookies.spotify_session === 'authorized';
-    return res.status(200).json({ authorized });
-}
-
-// api/logout.js
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-);
-
-export default async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://photic23.vercel.app');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-
-    if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method not allowed' });
-    }
-
     try {
-        // Clear stored tokens
-        await supabase
-            .from('spotify_tokens')
-            .delete()
-            .eq('id', 1);
+        // Parse cookies safely
+        const cookies = req.headers.cookie?.split('; ').reduce((acc, cookie) => {
+            const [key, value] = cookie.split('=');
+            if (key && value) {
+                acc[key] = value;
+            }
+            return acc;
+        }, {}) || {};
         
-        // Clear session cookie
-        res.setHeader('Set-Cookie', `spotify_session=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0`);
-        
-        return res.status(200).json({ success: true });
+        const authorized = cookies.spotify_session === 'authorized';
+        return res.status(200).json({ authorized });
     } catch (error) {
-        console.error('Error during logout:', error);
-        return res.status(500).json({ error: 'Failed to logout' });
+        console.error('Error in auth-status:', error);
+        return res.status(200).json({ authorized: false });
     }
-}
+};
