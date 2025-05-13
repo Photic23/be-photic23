@@ -28,6 +28,7 @@ module.exports = async function handler(req, res) {
         
         // Get fresh access token
         console.log('Getting access token...');
+        console.log('Using refresh token:', refreshToken.substring(0, 10) + '...'); // Log first 10 chars for debugging
         
         const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
             method: 'POST',
@@ -43,7 +44,12 @@ module.exports = async function handler(req, res) {
         });
         
         const tokenData = await tokenResponse.json();
-        console.log('Token response:', tokenResponse.status, tokenData.error || 'success');
+        console.log('Token response:', {
+            status: tokenResponse.status,
+            error: tokenData.error,
+            hasAccessToken: !!tokenData.access_token,
+            hasNewRefreshToken: !!tokenData.refresh_token // Check if Spotify sent a new refresh token
+        });
         
         if (tokenData.error) {
             console.error('Token error:', tokenData);
@@ -56,17 +62,16 @@ module.exports = async function handler(req, res) {
                 });
             }
             
-            if (tokenData.error === 'invalid_client') {
-                return res.status(200).json({ 
-                    error: 'Invalid client credentials',
-                    details: 'Check SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET'
-                });
-            }
-            
             return res.status(200).json({ 
                 error: 'Authentication failed',
                 details: tokenData.error_description || tokenData.error
             });
+        }
+        
+        // Important: Check if Spotify sent a new refresh token
+        if (tokenData.refresh_token && tokenData.refresh_token !== refreshToken) {
+            console.warn('WARNING: Spotify sent a new refresh token! You need to update your environment variable.');
+            console.log('New refresh token (first 10 chars):', tokenData.refresh_token.substring(0, 10) + '...');
         }
         
         const accessToken = tokenData.access_token;
@@ -81,16 +86,7 @@ module.exports = async function handler(req, res) {
         console.log('Track response:', trackResponse.status);
         
         if (trackResponse.status === 204) {
-            // No content - nothing playing
             return res.status(200).json(null);
-        }
-        
-        if (trackResponse.status === 401) {
-            console.error('Unauthorized - token might be invalid');
-            return res.status(200).json({ 
-                error: 'Authorization failed',
-                needsNewToken: true
-            });
         }
         
         if (trackResponse.ok) {
@@ -98,7 +94,6 @@ module.exports = async function handler(req, res) {
             console.log('Track playing:', trackData.is_playing, trackData.item?.name);
             
             if (trackData.is_playing && trackData.item) {
-                // Return only essential track information
                 return res.status(200).json({
                     name: trackData.item.name,
                     artists: trackData.item.artists.map(artist => artist.name),
@@ -113,7 +108,6 @@ module.exports = async function handler(req, res) {
             return res.status(200).json(null);
         }
         
-        console.error('Unexpected response status:', trackResponse.status);
         return res.status(200).json(null);
         
     } catch (error) {
