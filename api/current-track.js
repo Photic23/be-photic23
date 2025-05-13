@@ -1,120 +1,88 @@
-const tokenStore = {
-    accessToken: null,
-    expiresAt: null,
-    refreshToken: null,
-    isRefreshing: false,
-    lastError: null
+module.exports = async function handler(req, res) {
+    const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
+    const host = req.headers.host.startsWith('localhost') 
+        ? `http://${req.headers.host}` 
+        : `https://${req.headers.host}`;
+    const REDIRECT_URI = `${host}/api/simple-callback`;
+    
+    // Generate simple code verifier
+    const codeVerifier = Array(128).fill(0)
+        .map(() => Math.random().toString(36)[2])
+        .join('');
+    
+    // Set cookie to store verifier
+    res.setHeader('Set-Cookie', `verifier=${codeVerifier}; HttpOnly; Path=/; Max-Age=600`);
+    
+    // Simple code challenge
+    const crypto = require('crypto');
+    const codeChallenge = crypto
+        .createHash('sha256')
+        .update(codeVerifier)
+        .digest('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+    
+    const authUrl = `https://accounts.spotify.com/authorize?${new URLSearchParams({
+        response_type: 'code',
+        client_id: CLIENT_ID,
+        scope: 'user-read-currently-playing',
+        redirect_uri: REDIRECT_URI,
+        code_challenge_method: 'S256',
+        code_challenge: codeChallenge
+    })}`;
+    
+    res.redirect(authUrl);
 };
 
-async function getAccessToken() {
-    const now = Date.now();
-    
-    // If we have a valid token, use it
-    if (tokenStore.accessToken && tokenStore.expiresAt && now < tokenStore.expiresAt) {
-        return tokenStore.accessToken;
-    }
-    
-    // If already refreshing, wait a bit and check again
-    if (tokenStore.isRefreshing) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        return tokenStore.accessToken;
-    }
-    
-    // Need to refresh
-    tokenStore.isRefreshing = true;
-    
-    try {
-        const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
-        const clientId = process.env.SPOTIFY_CLIENT_ID;
-        
-        if (!refreshToken || !clientId) {
-            throw new Error('Missing credentials');
-        }
-        
-        const response = await fetch('https://accounts.spotify.com/api/token', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({
-                grant_type: 'refresh_token',
-                refresh_token: refreshToken,
-                client_id: clientId,
-            }),
-        });
-        
-        const data = await response.json();
-        
-        if (data.error) {
-            tokenStore.lastError = data;
-            if (data.error === 'invalid_grant') {
-                throw new Error('Refresh token revoked. Please re-authenticate.');
-            }
-            throw new Error(data.error_description || data.error);
-        }
-        
-        // Store the new token (expires in 30 minutes to be safe)
-        tokenStore.accessToken = data.access_token;
-        tokenStore.expiresAt = now + (30 * 60 * 1000);
-        tokenStore.lastError = null;
-        
-        return data.access_token;
-        
-    } catch (error) {
-        tokenStore.accessToken = null;
-        tokenStore.expiresAt = null;
-        throw error;
-    } finally {
-        tokenStore.isRefreshing = false;
-    }
-}
-
+// api/simple-callback.js
 module.exports = async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    const { code } = req.query;
+    const cookies = req.headers.cookie?.split('; ').reduce((acc, c) => {
+        const [key, value] = c.split('=');
+        acc[key] = value;
+        return acc;
+    }, {}) || {};
     
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
+    const codeVerifier = cookies.verifier;
+    
+    if (!code || !codeVerifier) {
+        return res.status(400).send('Missing code or verifier');
     }
     
-    try {
-        const accessToken = await getAccessToken();
-        
-        const response = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-            headers: {
-                'Authorization': `Bearer ${accessToken}`
-            }
-        });
-        
-        if (response.status === 204) {
-            return res.status(200).json(null);
-        }
-        
-        if (response.status === 401) {
-            // Token expired, clear it
-            tokenStore.accessToken = null;
-            tokenStore.expiresAt = null;
-            throw new Error('Token expired');
-        }
-        
-        if (response.ok) {
-            const data = await response.json();
-            return res.status(200).json(data.is_playing ? data.item : null);
-        }
-        
-        return res.status(200).json(null);
-        
-    } catch (error) {
-        console.error('Error:', error.message);
-        
-        if (error.message.includes('revoked')) {
-            return res.status(200).json({ 
-                error: error.message,
-                needsNewToken: true 
-            });
-        }
-        
-        return res.status(200).json(null);
+    const host = req.headers.host.startsWith('localhost') 
+        ? `http://${req.headers.host}` 
+        : `https://${req.headers.host}`;
+    
+    const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: `${host}/api/simple-callback`,
+            client_id: process.env.SPOTIFY_CLIENT_ID,
+            code_verifier: codeVerifier,
+        }),
+    });
+    
+    const data = await tokenResponse.json();
+    
+    if (data.refresh_token) {
+        res.setHeader('Content-Type', 'text/html');
+        res.send(`
+            <html>
+            <body style="font-family: Arial; padding: 20px;">
+                <h1>✅ Success!</h1>
+                <h2>Copy this refresh token:</h2>
+                <pre style="background: #000; color: #0f0; padding: 20px; word-wrap: break-word;">
+${data.refresh_token}
+                </pre>
+                <p>Update SPOTIFY_REFRESH_TOKEN in Vercel and redeploy.</p>
+            </body>
+            </html>
+        `);
+    } else {
+        res.status(400).json(data);
     }
 };
