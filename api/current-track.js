@@ -1,8 +1,63 @@
-// Simple in-memory cache for access tokens
-let tokenCache = {
+// Version with request deduplication to prevent concurrent token refreshes
+const tokenCache = global.spotifyTokenCache || {
     accessToken: null,
-    expiresAt: null
+    expiresAt: null,
+    refreshPromise: null
 };
+
+if (!global.spotifyTokenCache) {
+    global.spotifyTokenCache = tokenCache;
+}
+
+async function getAccessToken(refreshToken, clientId, clientSecret) {
+    // If we already have a valid token, return it
+    if (tokenCache.accessToken && Date.now() < tokenCache.expiresAt) {
+        console.log('Using cached access token');
+        return tokenCache.accessToken;
+    }
+    
+    // If a refresh is already in progress, wait for it
+    if (tokenCache.refreshPromise) {
+        console.log('Waiting for in-progress token refresh');
+        return await tokenCache.refreshPromise;
+    }
+    
+    // Start a new refresh
+    console.log('Starting new token refresh');
+    tokenCache.refreshPromise = (async () => {
+        try {
+            const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    grant_type: 'refresh_token',
+                    refresh_token: refreshToken,
+                    client_id: clientId,
+                    client_secret: clientSecret
+                }),
+            });
+            
+            const tokenData = await tokenResponse.json();
+            
+            if (tokenData.error) {
+                throw new Error(tokenData.error);
+            }
+            
+            // Cache the new access token
+            tokenCache.accessToken = tokenData.access_token;
+            tokenCache.expiresAt = Date.now() + (tokenData.expires_in * 1000) - 60000;
+            
+            return tokenData.access_token;
+        } finally {
+            // Clear the promise regardless of success or failure
+            tokenCache.refreshPromise = null;
+        }
+    })();
+    
+    return await tokenCache.refreshPromise;
+}
 
 module.exports = async function handler(req, res) {
     console.log(`[${new Date().toISOString()}] Current track request`);
@@ -21,59 +76,25 @@ module.exports = async function handler(req, res) {
         const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
         
         if (!refreshToken || !clientId || !clientSecret) {
-            console.error('Missing credentials');
             return res.status(200).json({ 
                 error: 'Missing Spotify credentials',
                 details: 'Server configuration error'
             });
         }
         
-        let accessToken = tokenCache.accessToken;
-        
-        // Check if we need a new access token
-        if (!accessToken || Date.now() >= tokenCache.expiresAt) {
-            console.log('Getting new access token...');
-            
-            const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: new URLSearchParams({
-                    grant_type: 'refresh_token',
-                    refresh_token: refreshToken,
-                    client_id: clientId,
-                    client_secret: clientSecret
-                }),
-            });
-            
-            const tokenData = await tokenResponse.json();
-            
-            if (tokenData.error) {
-                console.error('Token error:', tokenData);
-                
-                if (tokenData.error === 'invalid_grant') {
-                    return res.status(200).json({ 
-                        error: 'Refresh token expired or revoked',
-                        needsNewToken: true,
-                        details: 'Please re-authenticate with Spotify'
-                    });
-                }
-                
+        let accessToken;
+        try {
+            accessToken = await getAccessToken(refreshToken, clientId, clientSecret);
+        } catch (error) {
+            console.error('Token refresh error:', error.message);
+            if (error.message === 'invalid_grant') {
                 return res.status(200).json({ 
-                    error: 'Authentication failed',
-                    details: tokenData.error_description || tokenData.error
+                    error: 'Refresh token expired or revoked',
+                    needsNewToken: true,
+                    details: 'Please re-authenticate with Spotify'
                 });
             }
-            
-            // Cache the new access token
-            accessToken = tokenData.access_token;
-            tokenCache.accessToken = accessToken;
-            tokenCache.expiresAt = Date.now() + (tokenData.expires_in * 1000) - 60000; // Refresh 1 minute early
-            
-            console.log('Cached new access token, expires at:', new Date(tokenCache.expiresAt).toISOString());
-        } else {
-            console.log('Using cached access token');
+            throw error;
         }
         
         // Get current track
@@ -90,8 +111,7 @@ module.exports = async function handler(req, res) {
         }
         
         if (trackResponse.status === 401) {
-            // Access token expired, clear cache and try again
-            console.log('Access token expired, clearing cache');
+            // Access token expired, clear cache
             tokenCache.accessToken = null;
             tokenCache.expiresAt = null;
             return res.status(200).json({ 
@@ -114,8 +134,6 @@ module.exports = async function handler(req, res) {
                     external_urls: trackData.item.external_urls
                 });
             }
-            
-            return res.status(200).json(null);
         }
         
         return res.status(200).json(null);
