@@ -6,6 +6,10 @@ const supabase = createClient(
     process.env.SUPABASE_ANON_KEY
 );
 
+// Cache for the current access token
+let cachedAccessToken = null;
+let tokenExpiresAt = null;
+
 module.exports = async function handler(req, res) {
     // Enable CORS
     const allowedOrigins = [
@@ -26,25 +30,12 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Check if we have hardcoded tokens first
-        let accessToken = process.env.SPOTIFY_ACCESS_TOKEN;
-        let refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
+        // Get valid access token
+        const accessToken = await getValidAccessToken();
         
-        // If no hardcoded tokens, check database
         if (!accessToken) {
-            const { data: tokenData, error } = await supabase
-                .from('spotify_tokens')
-                .select('*')
-                .eq('id', 1)
-                .single();
-
-            if (error || !tokenData) {
-                console.log('No tokens found in database');
-                return res.status(200).json(null);
-            }
-
-            accessToken = tokenData.access_token;
-            refreshToken = tokenData.refresh_token;
+            console.log('No valid access token available');
+            return res.status(200).json(null);
         }
 
         // Try to fetch current track
@@ -63,37 +54,9 @@ module.exports = async function handler(req, res) {
         }
 
         if (response.status === 401) {
-            console.log('Token expired, attempting refresh...');
-            // Token expired, try to refresh
-            const newToken = await refreshSpotifyToken(refreshToken);
-            if (newToken) {
-                console.log('Token refreshed successfully');
-                // Retry with new token
-                const retryResponse = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-                    headers: {
-                        'Authorization': `Bearer ${newToken}`
-                    }
-                });
-                
-                console.log('Retry response status:', retryResponse.status);
-                
-                if (retryResponse.status === 204) {
-                    return res.status(200).json(null);
-                }
-                
-                if (retryResponse.ok) {
-                    const data = await retryResponse.json();
-                    console.log('Track data:', data?.item?.name);
-                    console.log('Is playing:', data?.is_playing);
-                    
-                    // Only return if actually playing
-                    if (data?.is_playing) {
-                        return res.status(200).json(data.item);
-                    } else {
-                        return res.status(200).json(null);
-                    }
-                }
-            }
+            console.log('Token still invalid after refresh, clearing cache');
+            cachedAccessToken = null;
+            tokenExpiresAt = null;
             return res.status(200).json(null);
         }
 
@@ -101,13 +64,11 @@ module.exports = async function handler(req, res) {
             const data = await response.json();
             console.log('Track data:', data?.item?.name);
             console.log('Is playing:', data?.is_playing);
-            console.log('Progress:', data?.progress_ms);
             
             // Only return if actually playing
             if (data?.is_playing) {
                 return res.status(200).json(data.item);
             } else {
-                console.log('Track is paused');
                 return res.status(200).json(null);
             }
         }
@@ -118,6 +79,50 @@ module.exports = async function handler(req, res) {
         return res.status(500).json({ error: 'Failed to fetch current track' });
     }
 };
+
+async function getValidAccessToken() {
+    // Check if we have a valid cached token
+    if (cachedAccessToken && tokenExpiresAt && new Date() < tokenExpiresAt) {
+        console.log('Using cached access token');
+        return cachedAccessToken;
+    }
+
+    // Get refresh token
+    const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN || await getRefreshTokenFromDb();
+    
+    if (!refreshToken) {
+        console.log('No refresh token available');
+        return null;
+    }
+
+    // Refresh the access token
+    const newAccessToken = await refreshSpotifyToken(refreshToken);
+    
+    if (newAccessToken) {
+        // Cache the new token
+        cachedAccessToken = newAccessToken;
+        tokenExpiresAt = new Date(Date.now() + 50 * 60 * 1000); // 50 minutes (tokens last 60)
+        console.log('Access token refreshed and cached');
+        return newAccessToken;
+    }
+
+    return null;
+}
+
+async function getRefreshTokenFromDb() {
+    try {
+        const { data: tokenData } = await supabase
+            .from('spotify_tokens')
+            .select('refresh_token')
+            .eq('id', 1)
+            .single();
+        
+        return tokenData?.refresh_token;
+    } catch (error) {
+        console.error('Error getting refresh token from DB:', error);
+        return null;
+    }
+}
 
 async function refreshSpotifyToken(refreshToken) {
     if (!refreshToken) return null;
@@ -137,29 +142,30 @@ async function refreshSpotifyToken(refreshToken) {
         });
 
         const data = await response.json();
+        
+        if (!response.ok) {
+            console.error('Token refresh failed:', data);
+            return null;
+        }
+        
         if (data.access_token) {
             console.log('New access token received');
             
-            // If using hardcoded refresh token, don't update database
-            if (process.env.SPOTIFY_REFRESH_TOKEN) {
-                return data.access_token;
+            // Update database if not using hardcoded tokens
+            if (!process.env.SPOTIFY_REFRESH_TOKEN) {
+                const expiresAt = new Date(Date.now() + (data.expires_in * 1000));
+                
+                await supabase
+                    .from('spotify_tokens')
+                    .update({
+                        access_token: data.access_token,
+                        refresh_token: data.refresh_token || refreshToken,
+                        expires_at: expiresAt.toISOString()
+                    })
+                    .eq('id', 1);
             }
             
-            // Otherwise, update database
-            const expiresAt = new Date(Date.now() + (data.expires_in * 1000));
-            
-            await supabase
-                .from('spotify_tokens')
-                .update({
-                    access_token: data.access_token,
-                    refresh_token: data.refresh_token || refreshToken,
-                    expires_at: expiresAt.toISOString()
-                })
-                .eq('id', 1);
-            
             return data.access_token;
-        } else {
-            console.error('Failed to refresh token:', data);
         }
     } catch (error) {
         console.error('Error refreshing token:', error);
