@@ -12,13 +12,21 @@ module.exports = async function handler(req, res) {
     try {
         const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
         const clientId = process.env.SPOTIFY_CLIENT_ID;
+        const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
         
-        if (!refreshToken || !clientId) {
-            console.log('Missing credentials');
-            return res.status(200).json(null);
+        if (!refreshToken || !clientId || !clientSecret) {
+            console.error('Missing credentials:', {
+                hasRefreshToken: !!refreshToken,
+                hasClientId: !!clientId,
+                hasClientSecret: !!clientSecret
+            });
+            return res.status(200).json({ 
+                error: 'Missing Spotify credentials',
+                details: 'Server configuration error'
+            });
         }
         
-        // Always get a fresh access token - simple approach
+        // Get fresh access token
         console.log('Getting access token...');
         
         const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
@@ -30,6 +38,7 @@ module.exports = async function handler(req, res) {
                 grant_type: 'refresh_token',
                 refresh_token: refreshToken,
                 client_id: clientId,
+                client_secret: clientSecret
             }),
         });
         
@@ -41,12 +50,23 @@ module.exports = async function handler(req, res) {
             
             if (tokenData.error === 'invalid_grant') {
                 return res.status(200).json({ 
-                    error: 'Refresh token revoked. Please re-authenticate.',
-                    needsNewToken: true 
+                    error: 'Refresh token expired or revoked',
+                    needsNewToken: true,
+                    details: 'Please re-authenticate with Spotify'
                 });
             }
             
-            return res.status(200).json(null);
+            if (tokenData.error === 'invalid_client') {
+                return res.status(200).json({ 
+                    error: 'Invalid client credentials',
+                    details: 'Check SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET'
+                });
+            }
+            
+            return res.status(200).json({ 
+                error: 'Authentication failed',
+                details: tokenData.error_description || tokenData.error
+            });
         }
         
         const accessToken = tokenData.access_token;
@@ -61,19 +81,46 @@ module.exports = async function handler(req, res) {
         console.log('Track response:', trackResponse.status);
         
         if (trackResponse.status === 204) {
+            // No content - nothing playing
             return res.status(200).json(null);
+        }
+        
+        if (trackResponse.status === 401) {
+            console.error('Unauthorized - token might be invalid');
+            return res.status(200).json({ 
+                error: 'Authorization failed',
+                needsNewToken: true
+            });
         }
         
         if (trackResponse.ok) {
             const trackData = await trackResponse.json();
             console.log('Track playing:', trackData.is_playing, trackData.item?.name);
-            return res.status(200).json(trackData.is_playing ? trackData.item : null);
+            
+            if (trackData.is_playing && trackData.item) {
+                // Return only essential track information
+                return res.status(200).json({
+                    name: trackData.item.name,
+                    artists: trackData.item.artists.map(artist => artist.name),
+                    album: trackData.item.album.name,
+                    image: trackData.item.album.images[0]?.url,
+                    duration_ms: trackData.item.duration_ms,
+                    progress_ms: trackData.progress_ms,
+                    external_urls: trackData.item.external_urls
+                });
+            }
+            
+            return res.status(200).json(null);
         }
         
+        console.error('Unexpected response status:', trackResponse.status);
         return res.status(200).json(null);
         
     } catch (error) {
         console.error('Error:', error.message);
-        return res.status(200).json(null);
+        return res.status(200).json({ 
+            error: 'Server error',
+            details: error.message
+        });
     }
 };
