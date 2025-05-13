@@ -1,29 +1,19 @@
-// api/current-track.js - Use env variable instead of database
 module.exports = async function handler(req, res) {
-    // CORS
-    const allowedOrigins = [
-        'https://photic23.vercel.app',
-        'http://localhost:3000',
-        'http://localhost:3001'
-    ];
-    
-    const origin = req.headers.origin;
-    if (allowedOrigins.includes(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-    }
-    
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    // Simple CORS for all origins
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
 
     try {
-        // Get refresh token from environment variable instead of database
         const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
+        const clientId = process.env.SPOTIFY_CLIENT_ID;
         
-        if (!refreshToken) {
-            console.log('No refresh token in environment');
+        if (!refreshToken || !clientId) {
+            console.log('Missing environment variables');
             return res.status(200).json(null);
         }
 
@@ -36,33 +26,34 @@ module.exports = async function handler(req, res) {
             body: new URLSearchParams({
                 grant_type: 'refresh_token',
                 refresh_token: refreshToken,
-                client_id: process.env.SPOTIFY_CLIENT_ID,
+                client_id: clientId,
             }),
         });
 
         const tokenData = await tokenResponse.json();
         
-        if (tokenData.error) {
-            console.log('Token refresh failed:', tokenData);
+        if (!tokenData.access_token) {
+            console.error('Failed to get access token:', tokenData);
             return res.status(200).json(null);
         }
 
         // Get current track
-        const response = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+        const trackResponse = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
             headers: {
                 'Authorization': `Bearer ${tokenData.access_token}`
             }
         });
 
-        if (response.status === 204) {
+        if (trackResponse.status === 204) {
+            // No content - nothing playing
             return res.status(200).json(null);
         }
 
-        if (response.ok) {
-            const data = await response.json();
-            // Only return if actually playing
-            if (data?.is_playing) {
-                return res.status(200).json(data.item);
+        if (trackResponse.ok) {
+            const trackData = await trackResponse.json();
+            // Check if actually playing
+            if (trackData.is_playing) {
+                return res.status(200).json(trackData.item);
             }
         }
 
