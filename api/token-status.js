@@ -1,37 +1,19 @@
-// api/token-status.js - Monitor token status
 module.exports = async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     
-    // Get the current cache status from the current-track module
     const status = {
         time: new Date().toISOString(),
         hasRefreshToken: !!process.env.SPOTIFY_REFRESH_TOKEN,
         hasClientId: !!process.env.SPOTIFY_CLIENT_ID,
-        // These would need to be exported from current-track.js
-        // For now, just test if we can refresh
+        refreshTokenStatus: 'Not tested - would invalidate current session',
+        advice: 'Do not test refresh token if current session is working'
     };
     
-    try {
-        // Test if refresh token works
-        const response = await fetch('https://accounts.spotify.com/api/token', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({
-                grant_type: 'refresh_token',
-                refresh_token: process.env.SPOTIFY_REFRESH_TOKEN,
-                client_id: process.env.SPOTIFY_CLIENT_ID,
-            }),
-        });
-        
-        const data = await response.json();
-        
-        status.refreshTokenStatus = data.error ? `Error: ${data.error}` : 'Valid';
-        status.tokenResponse = data;
-        
-    } catch (error) {
-        status.refreshTokenStatus = `Error: ${error.message}`;
+    // DO NOT test the refresh token - just report its presence
+    if (process.env.SPOTIFY_REFRESH_TOKEN && process.env.SPOTIFY_CLIENT_ID) {
+        status.message = 'Credentials are configured. Do not test refresh if current track is working.';
+    } else {
+        status.message = 'Missing credentials';
     }
     
     return res.status(200).json(status);
