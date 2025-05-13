@@ -1,13 +1,17 @@
-const { createClient } = require('@supabase/supabase-js');
-
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-);
-
+// api/current-track.js - Use env variable instead of database
 module.exports = async function handler(req, res) {
     // CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const allowedOrigins = [
+        'https://photic23.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:3001'
+    ];
+    
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     
     if (req.method === 'OPTIONS') {
@@ -15,14 +19,15 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Get refresh token from env
+        // Get refresh token from environment variable instead of database
         const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
         
         if (!refreshToken) {
+            console.log('No refresh token in environment');
             return res.status(200).json(null);
         }
 
-        // Always get a fresh access token using refresh token
+        // Get fresh access token
         const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
             method: 'POST',
             headers: {
@@ -37,7 +42,7 @@ module.exports = async function handler(req, res) {
 
         const tokenData = await tokenResponse.json();
         
-        if (!tokenData.access_token) {
+        if (tokenData.error) {
             console.log('Token refresh failed:', tokenData);
             return res.status(200).json(null);
         }
@@ -55,6 +60,7 @@ module.exports = async function handler(req, res) {
 
         if (response.ok) {
             const data = await response.json();
+            // Only return if actually playing
             if (data?.is_playing) {
                 return res.status(200).json(data.item);
             }
