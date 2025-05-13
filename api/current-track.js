@@ -1,22 +1,13 @@
 const { createClient } = require('@supabase/supabase-js');
 
-// Initialize Supabase with error handling
-let supabase;
-try {
-    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-        console.log('Missing Supabase environment variables');
-    } else {
-        supabase = createClient(
-            process.env.SUPABASE_URL,
-            process.env.SUPABASE_ANON_KEY
-        );
-    }
-} catch (error) {
-    console.error('Supabase initialization error:', error);
-}
+// Initialize Supabase
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+);
 
 module.exports = async function handler(req, res) {
-    // CORS handling
+    // Enable CORS
     const allowedOrigins = [
         'https://photic23.vercel.app',
         'http://localhost:3000',
@@ -34,37 +25,31 @@ module.exports = async function handler(req, res) {
         return res.status(200).end();
     }
 
-    // If Supabase isn't initialized, return null
-    if (!supabase) {
-        console.log('Supabase not initialized - returning null');
-        return res.status(200).json(null);
-    }
-
     try {
-        // Get the stored tokens
-        const { data: tokenData, error } = await supabase
-            .from('spotify_tokens')
-            .select('*')
-            .eq('id', 1)
-            .single();
+        // Check if we have hardcoded tokens first
+        let accessToken = process.env.SPOTIFY_ACCESS_TOKEN;
+        let refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
+        
+        // If no hardcoded tokens, check database
+        if (!accessToken) {
+            const { data: tokenData, error } = await supabase
+                .from('spotify_tokens')
+                .select('*')
+                .eq('id', 1)
+                .single();
 
-        if (error || !tokenData) {
-            return res.status(200).json(null);
-        }
-
-        // Check if token is expired
-        if (tokenData.expires_at && new Date(tokenData.expires_at) < new Date()) {
-            // Token is expired, try to refresh it
-            const newToken = await refreshSpotifyToken(tokenData.refresh_token);
-            if (!newToken) {
+            if (error || !tokenData) {
                 return res.status(200).json(null);
             }
-            tokenData.access_token = newToken;
+
+            accessToken = tokenData.access_token;
+            refreshToken = tokenData.refresh_token;
         }
 
+        // Try to fetch current track
         const response = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
             headers: {
-                'Authorization': `Bearer ${tokenData.access_token}`
+                'Authorization': `Bearer ${accessToken}`
             }
         });
 
@@ -74,7 +59,7 @@ module.exports = async function handler(req, res) {
 
         if (response.status === 401) {
             // Token expired, try to refresh
-            const newToken = await refreshSpotifyToken(tokenData.refresh_token);
+            const newToken = await refreshSpotifyToken(refreshToken);
             if (newToken) {
                 // Retry with new token
                 const retryResponse = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
@@ -99,7 +84,7 @@ module.exports = async function handler(req, res) {
         return res.status(200).json(null);
     } catch (error) {
         console.error('Error fetching current track:', error);
-        return res.status(200).json(null);
+        return res.status(500).json({ error: 'Failed to fetch current track' });
     }
 };
 
@@ -121,7 +106,12 @@ async function refreshSpotifyToken(refreshToken) {
 
         const data = await response.json();
         if (data.access_token) {
-            // Update tokens in database
+            // If using hardcoded refresh token, don't update database
+            if (process.env.SPOTIFY_REFRESH_TOKEN) {
+                return data.access_token;
+            }
+            
+            // Otherwise, update database
             const expiresAt = new Date(Date.now() + (data.expires_in * 1000));
             
             await supabase
